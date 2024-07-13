@@ -4,46 +4,6 @@ import socket
 import re
 import random
 
-# def tcp_syn_scan(target_ip, port_range):
-#     open_ports = []
-#     for port in port_range:
-#         pkt = IP(dst=target_ip)/TCP(dport=port, flags="S")
-#         response = sr1(pkt, timeout=1, verbose=0)
-#         if response and response.haslayer(TCP) and response[TCP].flags == 0x12:
-#             open_ports.append(port)
-#             sr1(IP(dst=target_ip)/TCP(dport=port, flags="R"), timeout=1, verbose=0)  # Reset connection
-#     return open_ports
-
-def parse_ports(port_string):
-    # 特定の形式で指定されたポート番号を数値の集合として返す
-    ports = set()
-    for part in port_string.split(','):
-        if '-' in part:
-            start, end = part.split('-')
-            ports.update(range(int(start), int(end) + 1))
-        else:
-            ports.add(int(part))
-    return sorted(ports)
-
-def validate_ports(port_string):
-    # ポート番号の指定が正しい形式かどうか検証
-    pattern = re.compile(r'^(\d+(-\d+)?)(,\d+(-\d+)?)*$')
-    if not pattern.match(port_string):
-        raise argparse.ArgumentTypeError("Invalid format.")
-    return port_string
-
-class ScanTypeAction(argparse.Action):
-    def __call__(self, parser, namespace, values, option_string=None):
-        # 指定されたスキャンタイプを列挙
-        for char in values:
-            if char == 'S':
-                namespace.SYN = True
-            elif char == 'T':
-                namespace.TCP = True
-            elif char == 'V':
-                namespace.VERSION = True
-            else:
-                raise argparse.ArgumentError(self, f"Invalid scan type: {char}")
 
 def resolve_ip(target):
     try:
@@ -56,6 +16,78 @@ def resolve_ip(target):
             return socket.gethostbyname(target)
         except socket.gaierror:
             raise ValueError(f"Invalid input: {target}")
+
+
+def parse_ports(port_string):
+    # 特定の形式で指定されたポート番号を数値の集合として返す
+    ports = set()
+    for part in port_string.split(','):
+        if '-' in part:
+            start, end = part.split('-')
+            ports.update(range(int(start), int(end) + 1))
+        else:
+            ports.add(int(part))
+    return sorted(ports)
+
+
+def validate_ports(port_string):
+    # ポート番号の指定が正しい形式かどうか検証
+    pattern = re.compile(r'^(\d+(-\d+)?)(,\d+(-\d+)?)*$')
+    if not pattern.match(port_string):
+        raise argparse.ArgumentTypeError("Invalid format.")
+    return port_string
+
+
+class ScanTypeAction(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if not hasattr(namespace, 'scan_types'):
+            namespace.scan_types = {}
+        for char in values:
+            if char == 'S':
+                namespace.scan_types['syn'] = True
+            elif char == 'U':
+                namespace.scan_types['udp'] = True
+            elif char == 'V':
+                namespace.scan_types['version_detection'] = True
+            else:
+                raise argparse.ArgumentError(self, f"Invalid scan type: {char}")
+
+
+class Scanner:
+    def __init__(self):
+        self.open_ports = set()
+        self.message_displayed = False
+
+    def _display_message(self):
+        if not self.message_displayed:
+            print("Starting port scan.")
+            self.message_displayed = True
+    
+    def syn_scan(self, target, port_range):
+        self._display_message()
+        # 送信元ポート番号（ランダム）
+        source_port = RandShort()
+        # 指定されたIPアドレスを送信先とするIPパケットを作成
+        ip = IP(dst=target)
+
+        for target_port in port_range:
+            # TCP 3way handshake
+            syn_packet = TCP(sport=source_port, dport=target_port, flags="S")
+            syn_ack_response = sr1(ip/syn_packet, timeout=0.05, verbose=0)
+            if syn_ack_response and syn_ack_response.haslayer(TCP) and syn_ack_response[TCP].flags == 'SA':
+                self.open_ports.add(target_port)
+                # RSTパケットを送信して接続をリセット
+                rst_packet = TCP(sport=source_port, dport=target_port, flags='R', seq=syn_ack_response.ack)
+                send(ip/rst_packet, verbose=0)
+    
+    def udp_scan(self, target, port_range):
+        self._display_message()
+    
+    def show_result(self):
+        for port in sorted(list(self.open_ports)):
+            print(f"Port {port} is open")
+
+
 
 def main():
     # コマンドライン引数を受け取る
@@ -82,27 +114,17 @@ def main():
     if args.all_ports:
         ports = list(range(1,65536))
 
-
     conf.verb = 0
-
-    # 送信元ポート番号（ランダム）
-    sport = RandShort()
-    # 送信先ポート番号
-    target_port = 443
-    # 指定されたIPアドレスを送信先とするIPパケットを作成
-    ip = IP(dst=ip_address)
-
-    # TCP 3way handshake
-    syn_packet = TCP(sport=sport, dport=target_port, flags="S", seq=seq)
-    syn_ack_response = sr1(ip/syn_packet)
-    if syn_ack_response and syn_ack_response.haslayer(TCP) and syn_ack_response[TCP].flags == 'SA':
-        print("SYN-ACK packet received.")
-
-        ACK = TCP(sport=sport, dport=target_port, flags="A", seq=syn_ack_response.ack, ack=syn_ack_response.seq + 1)
-        send(ip/ACK)
-
-        print("ACK packet sent, connection established.")
-
+    
+    scanner = Scanner()
+    scan_types = getattr(args, 'scan_types', {})
+    if scan_types.get('syn') or scan_types == {}:
+        scanner.syn_scan(ip_address, ports)
+    if scan_types.get('udp'):
+        scanner.udp_scan(ip_address, ports)
+    
+    scanner.show_result()
+    
 
 if __name__ == "__main__":
     main()
