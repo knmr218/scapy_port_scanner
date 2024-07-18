@@ -64,6 +64,16 @@ class Scanner:
         if not self.message_displayed:
             print("Starting port scan.")
             self.message_displayed = True
+
+    def host_discovery(self):
+        self._display_message()
+        ping = IP(dst=self.ip_address)/ICMP()
+        response = sr1(ping, timeout=2)
+        if response == None:
+            print("Host might be down or unreachable.")
+            print("If you want to skip the ping process, try -Pn.")
+            return False
+        return True
     
     def syn_scan(self):
         self._display_message()
@@ -102,6 +112,7 @@ def main():
     parser.add_argument("target", help="Specify target IP address or domain name")
     parser.add_argument("-p", "--ports", type=validate_ports, default='1-1024', help="Specify port ranges")
     parser.add_argument("-p-", "--all-ports", action="store_true", help="Scan all ports")
+    parser.add_argument("-Pn", action="store_true", help="Skip connection check with host")
     parser.add_argument('-s', '--scan', action=ScanTypeAction, help="Specify scan type (ex: -sS, -sT, -sU)")
 
     args = parser.parse_args()
@@ -124,13 +135,17 @@ def main():
     
     scanner = Scanner(ip_address, ports)
 
-    scan_types = getattr(args, 'scan_types', {})
-    if scan_types.get('syn') or scan_types == {}:
-        scanner.syn_scan()
-    if scan_types.get('udp'):
-        scanner.udp_scan()
-    
-    scanner.show_result()
+    if not args.Pn:
+        discovered = scanner.host_discovery()
+
+    if discovered:
+        scan_types = getattr(args, 'scan_types', {})
+        if scan_types.get('syn') or scan_types == {}:
+            scanner.syn_scan()
+        if scan_types.get('udp'):
+            scanner.udp_scan()
+        
+        scanner.show_result()
     
 
 if __name__ == "__main__":
