@@ -57,7 +57,7 @@ class Scanner:
     def __init__(self, ip_address, target_ports):
         self.ip_address = ip_address
         self.target_ports = target_ports
-        self.open_ports = {port:"filtered" for port in self.target_ports}
+        self.open_ports = {port:"closed" for port in self.target_ports}
         self.message_displayed = False
 
     def _display_message(self):
@@ -69,7 +69,7 @@ class Scanner:
         self._display_message()
         ping = IP(dst=self.ip_address)/ICMP()
         response = sr1(ping, timeout=2)
-        if response == None:
+        if response is None:
             print("Host might be down or unreachable.")
             print("If you want to skip the ping process, try -Pn.")
             return False
@@ -90,18 +90,34 @@ class Scanner:
             # SYN-ACKパケットのflagが"SA"の場合、ポートが開いていると判断
             if syn_ack_response and syn_ack_response.haslayer(TCP) and syn_ack_response[TCP].flags == 'SA':
                 self.open_ports[target_port] = "open"
-                
+
                 # RSTパケットを送信して接続をリセット
                 rst_packet = TCP(sport=source_port, dport=target_port, flags='R', seq=syn_ack_response.ack)
                 send(ip/rst_packet, verbose=0)
     
     def udp_scan(self):
         self._display_message()
+        for target_port in self.target_ports:
+            # パケットの作成
+            packet = IP(dst=self.ip_address)/UDP(dport=target_port)
+            response = sr1(packet, timeout=2, verbose=False)
+
+            # レスポンスがなければ、ポートが空いているかフィルタリングされていると判断する
+            # ポートが閉じている場合は ICMP Port Unreachable が返ってくる
+            if response is None:
+                self.open_ports[target_port] = "open|filtered"
+            elif response.haslayer(ICMP):
+                self.open_ports[target_port] = "closed"
+            elif response.haslayer(UDP):
+                self.open_ports[target_port] = "open|filtered"
+            else:
+                self.open_ports[target_port] = "unknown"
+                print(response.summary())
     
     def show_result(self):
         for port,result in self.open_ports.items():
-            if result == "open":
-                print(f"Port {port} is open")
+            if result != "closed":
+                print(f"Port {port} is {result}")
 
 
 
