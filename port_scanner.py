@@ -54,8 +54,10 @@ class ScanTypeAction(argparse.Action):
 
 
 class Scanner:
-    def __init__(self):
-        self.open_ports = set()
+    def __init__(self, ip_address, target_ports):
+        self.ip_address = ip_address
+        self.target_ports = target_ports
+        self.open_ports = {port:"filtered" for port in self.target_ports}
         self.message_displayed = False
 
     def _display_message(self):
@@ -63,29 +65,33 @@ class Scanner:
             print("Starting port scan.")
             self.message_displayed = True
     
-    def syn_scan(self, target, port_range):
+    def syn_scan(self):
         self._display_message()
         # 送信元ポート番号（ランダム）
         source_port = RandShort()
         # 指定されたIPアドレスを送信先とするIPパケットを作成
-        ip = IP(dst=target)
+        ip = IP(dst=self.ip_address)
 
-        for target_port in port_range:
+        for target_port in self.target_ports:
             # TCP 3way handshake
             syn_packet = TCP(sport=source_port, dport=target_port, flags="S")
             syn_ack_response = sr1(ip/syn_packet, timeout=0.05, verbose=0)
+
+            # SYN-ACKパケットのflagが"SA"の場合、ポートが開いていると判断
             if syn_ack_response and syn_ack_response.haslayer(TCP) and syn_ack_response[TCP].flags == 'SA':
-                self.open_ports.add(target_port)
+                self.open_ports[target_port] = "open"
+                
                 # RSTパケットを送信して接続をリセット
                 rst_packet = TCP(sport=source_port, dport=target_port, flags='R', seq=syn_ack_response.ack)
                 send(ip/rst_packet, verbose=0)
     
-    def udp_scan(self, target, port_range):
+    def udp_scan(self):
         self._display_message()
     
     def show_result(self):
-        for port in sorted(list(self.open_ports)):
-            print(f"Port {port} is open")
+        for port,result in self.open_ports.items():
+            if result == "open":
+                print(f"Port {port} is open")
 
 
 
@@ -116,12 +122,13 @@ def main():
 
     conf.verb = 0
     
-    scanner = Scanner()
+    scanner = Scanner(ip_address, ports)
+
     scan_types = getattr(args, 'scan_types', {})
     if scan_types.get('syn') or scan_types == {}:
-        scanner.syn_scan(ip_address, ports)
+        scanner.syn_scan()
     if scan_types.get('udp'):
-        scanner.udp_scan(ip_address, ports)
+        scanner.udp_scan()
     
     scanner.show_result()
     
