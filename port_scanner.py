@@ -18,6 +18,7 @@ def resolve_ip(target):
             raise ValueError(f"Invalid input: {target}")
 
 
+
 def parse_ports(port_string):
     # 特定の形式で指定されたポート番号を数値の集合として返す
     ports = set()
@@ -30,12 +31,14 @@ def parse_ports(port_string):
     return sorted(ports)
 
 
+
 def validate_ports(port_string):
     # ポート番号の指定が正しい形式かどうか検証
     pattern = re.compile(r'^(\d+(-\d+)?)(,\d+(-\d+)?)*$')
     if not pattern.match(port_string):
         raise argparse.ArgumentTypeError("Invalid format.")
     return port_string
+
 
 
 class ScanTypeAction(argparse.Action):
@@ -53,11 +56,12 @@ class ScanTypeAction(argparse.Action):
                 raise argparse.ArgumentError(self, f"Invalid scan type: {char}")
 
 
+
 class Scanner:
     def __init__(self, ip_address, target_ports):
         self.ip_address = ip_address
         self.target_ports = target_ports
-        self.open_ports = {port:"closed" for port in self.target_ports}
+        self.open_ports = {} # port:"closed" for port in self.target_ports
         self.message_displayed = False
 
     def _display_message(self):
@@ -74,7 +78,7 @@ class Scanner:
             print("If you want to skip the ping process, try -Pn.")
             return False
         return True
-    
+
     def syn_scan(self):
         self._display_message()
         # 送信元ポート番号（ランダム）
@@ -84,15 +88,30 @@ class Scanner:
 
         for target_port in self.target_ports:
             # TCP 3way handshake
-            syn_packet = TCP(sport=source_port, dport=target_port, flags="S")
-            syn_ack_response = sr1(ip/syn_packet, timeout=0.05, verbose=0)
+            packet = TCP(sport=source_port, dport=target_port, flags="S")
+            response = sr1(ip/packet, timeout=0.05, verbose=0)
+            key_name = str(target_port)+"/tcp"
+            scanned = key_name in self.open_ports
 
             # SYN-ACKパケットのflagが"SA"の場合、ポートが開いていると判断
-            if syn_ack_response and syn_ack_response.haslayer(TCP) and syn_ack_response[TCP].flags == 'SA':
-                self.open_ports[target_port] = "open"
+            # "RA"の場合は閉じていると判断
+            # すでに別のスキャンでの結果が出ている場合、結果を優先順位に従って修正する
+            if response != None:
+                if response.haslayer(TCP) and response[TCP].flags == 'SA':
+                    self.open_ports[key_name] = "open"
+                elif response.haslayer(TCP) and response[TCP].flags == 'RA':
+                    if not (scanned and self.open_ports[key_name] == "open"):
+                        self.open_ports[key_name] = "closed"
+                elif response.haslayer(TCP) or response.haslayer(ICMP):
+                    if not (scanned and self.open_ports[key_name] in ["open", "closed"]):
+                        self.open_ports[key_name] = "filtered"
+                else:
+                    if not (scanned and self.open_ports[key_name] == "open"):
+                        self.open_ports[key_name] = "unknown"
+                        print(response.summary())
 
                 # RSTパケットを送信して接続をリセット
-                rst_packet = TCP(sport=source_port, dport=target_port, flags='R', seq=syn_ack_response.ack)
+                rst_packet = TCP(sport=source_port, dport=target_port, flags='R', seq=response.ack)
                 send(ip/rst_packet, verbose=0)
     
     def udp_scan(self):
@@ -101,22 +120,23 @@ class Scanner:
             # パケットの作成
             packet = IP(dst=self.ip_address)/UDP(dport=target_port)
             response = sr1(packet, timeout=2, verbose=False)
+            key_name = str(target_port)+"/udp"
 
             # レスポンスがなければ、ポートが空いているかフィルタリングされていると判断する
             # ポートが閉じている場合は ICMP Port Unreachable が返ってくる
             if response is None:
-                self.open_ports[target_port] = "open|filtered"
+                self.open_ports[key_name] = "open|filtered"
             elif response.haslayer(ICMP):
-                self.open_ports[target_port] = "closed"
+                self.open_ports[key_name] = "closed"
             elif response.haslayer(UDP):
-                self.open_ports[target_port] = "open|filtered"
+                self.open_ports[key_name] = "open|filtered"
             else:
-                self.open_ports[target_port] = "unknown"
+                self.open_ports[key_name] = "unknown"
                 print(response.summary())
     
     def show_result(self):
         for port,result in self.open_ports.items():
-            if result != "closed":
+            if "open" in result:
                 print(f"Port {port} is {result}")
 
 
@@ -151,6 +171,7 @@ def main():
     
     scanner = Scanner(ip_address, ports)
 
+    discovered = True
     if not args.Pn:
         discovered = scanner.host_discovery()
 
