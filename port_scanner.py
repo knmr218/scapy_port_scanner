@@ -50,6 +50,8 @@ class ScanTypeAction(argparse.Action):
                 namespace.scan_types['syn'] = True
             elif char == 'U':
                 namespace.scan_types['udp'] = True
+            elif char == 'X':
+                namespace.scan_types['xmas'] = True
             elif char == 'V':
                 namespace.scan_types['version_detection'] = True
             else:
@@ -134,6 +136,30 @@ class Scanner:
                 self.open_ports[key_name] = "unknown"
                 print(response.summary())
     
+    def xmas_scan(self):
+        for target_port in self.target_ports:
+            # パケットの作成
+            pkt = IP(dst=self.ip_address)/TCP(dport=target_port, flags="FPU")
+            response = sr1(pkt, timeout=1, verbose=0)
+
+            key_name = str(target_port)+"/tcp"
+            scanned = key_name in self.open_ports
+            
+            # レスポンスがなければ、ポートが空いているかフィルタリングされていると判断する
+            if response is None:
+                if not (scanned and self.open_ports[key_name] in ["open", "closed"]):
+                    self.open_ports[key_name] = "open|filtered"
+            elif response.haslayer(TCP) and response.getlayer(TCP).flags == "RA":
+                if not (scanned and self.open_ports[key_name] == "open"):
+                    self.open_ports[key_name] = "Closed"
+            elif response.haslayer(ICMP):
+                if not (scanned and self.open_ports[key_name] in ["open", "closed", "open|filtered", "unknown"]):
+                    self.open_ports[key_name] = "filtered"
+            else:
+                if not (scanned and self.open_ports[key_name] in ["open", "closed"]):
+                    self.open_ports[key_name] = "unknown"
+                    print(response.summary())
+    
     def show_result(self):
         for port,result in self.open_ports.items():
             if "open" in result:
@@ -181,6 +207,8 @@ def main():
             scanner.syn_scan()
         if scan_types.get('udp'):
             scanner.udp_scan()
+        if scan_types.get('xmas'):
+            scanner.xmas_scan()
         
         scanner.show_result()
     
