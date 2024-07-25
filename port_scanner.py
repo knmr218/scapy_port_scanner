@@ -105,10 +105,10 @@ class Scanner:
                     if not (scanned and self.open_ports[key_name] == "open"):
                         self.open_ports[key_name] = "closed"
                 elif response.haslayer(TCP) or response.haslayer(ICMP):
-                    if not (scanned and self.open_ports[key_name] in ["open", "closed"]):
+                    if not (scanned and self.open_ports[key_name] in ["open", "closed", "open|filtered", "unknown"]):
                         self.open_ports[key_name] = "filtered"
                 else:
-                    if not (scanned and self.open_ports[key_name] == "open"):
+                    if not (scanned and self.open_ports[key_name] in ["open", "closed"]):
                         self.open_ports[key_name] = "unknown"
                         print(response.summary())
 
