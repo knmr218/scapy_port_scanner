@@ -3,6 +3,7 @@ import argparse
 import socket
 import re
 import random
+import asyncio
 
 
 def resolve_ip(target):
@@ -63,6 +64,7 @@ class Scanner:
     def __init__(self, ip_address, target_ports):
         self.ip_address = ip_address
         self.target_ports = target_ports
+        self.scan_types = []
         self.open_ports = {} # port:"closed" for port in self.target_ports
         self.message_displayed = False
 
@@ -80,85 +82,94 @@ class Scanner:
             print("If you want to skip the ping process, try -Pn.")
             return False
         return True
+    
+    async def scan_ports(self):
+        tasks = []
+        for port in self.target_ports:
+            if "syn" in self.scan_types:
+                tasks.append(self.syn_scan(port))
+            if "udp" in self.scan_types:
+                tasks.append(self.udp_scan(port))
+            if "xmas" in self.scan_types:
+                tasks.append(self.xmas_scan(port))
+        await asyncio.gather(*tasks)
 
-    def syn_scan(self):
+    async def syn_scan(self, target_port):
         self._display_message()
         # 送信元ポート番号（ランダム）
         source_port = RandShort()
         # 指定されたIPアドレスを送信先とするIPパケットを作成
         ip = IP(dst=self.ip_address)
 
-        for target_port in self.target_ports:
-            # TCP 3way handshake
-            packet = TCP(sport=source_port, dport=target_port, flags="S")
-            response = sr1(ip/packet, timeout=0.05, verbose=0)
-            key_name = str(target_port)+"/tcp"
-            scanned = key_name in self.open_ports
+        # TCP 3way handshake
+        packet = TCP(sport=source_port, dport=target_port, flags="S")
+        response = sr1(ip/packet, timeout=0.05, verbose=0)
+        key_name = str(target_port)+"/tcp"
+        scanned = key_name in self.open_ports
 
-            # SYN-ACKパケットのflagが"SA"の場合、ポートが開いていると判断
-            # "RA"の場合は閉じていると判断
-            # すでに別のスキャンでの結果が出ている場合、結果を優先順位に従って修正する
-            if response != None:
-                if response.haslayer(TCP) and response[TCP].flags == 'SA':
-                    self.open_ports[key_name] = "open"
-                elif response.haslayer(TCP) and response[TCP].flags == 'RA':
-                    if not (scanned and self.open_ports[key_name] == "open"):
-                        self.open_ports[key_name] = "closed"
-                elif response.haslayer(TCP) or response.haslayer(ICMP):
-                    if not (scanned and self.open_ports[key_name] in ["open", "closed", "open|filtered", "unknown"]):
-                        self.open_ports[key_name] = "filtered"
-                else:
-                    if not (scanned and self.open_ports[key_name] in ["open", "closed"]):
-                        self.open_ports[key_name] = "unknown"
-                        print(response.summary())
-
-                # RSTパケットを送信して接続をリセット
-                rst_packet = TCP(sport=source_port, dport=target_port, flags='R', seq=response.ack)
-                send(ip/rst_packet, verbose=0)
-    
-    def udp_scan(self):
-        self._display_message()
-        for target_port in self.target_ports:
-            # パケットの作成
-            packet = IP(dst=self.ip_address)/UDP(dport=target_port)
-            response = sr1(packet, timeout=2, verbose=False)
-            key_name = str(target_port)+"/udp"
-
-            # レスポンスがなければ、ポートが空いているかフィルタリングされていると判断する
-            # ポートが閉じている場合は ICMP Port Unreachable が返ってくる
-            if response is None:
-                self.open_ports[key_name] = "open|filtered"
-            elif response.haslayer(ICMP):
-                self.open_ports[key_name] = "closed"
-            elif response.haslayer(UDP):
-                self.open_ports[key_name] = "open|filtered"
-            else:
-                self.open_ports[key_name] = "unknown"
-                print(response.summary())
-    
-    def xmas_scan(self):
-        for target_port in self.target_ports:
-            # パケットの作成
-            pkt = IP(dst=self.ip_address)/TCP(dport=target_port, flags="FPU")
-            response = sr1(pkt, timeout=1, verbose=0)
-
-            key_name = str(target_port)+"/tcp"
-            scanned = key_name in self.open_ports
-            
-            # レスポンスがなければ、ポートが空いているかフィルタリングされていると判断する
-            if response is None:
-                if not (scanned and self.open_ports[key_name] in ["open", "closed"]):
-                    self.open_ports[key_name] = "open|filtered"
-            elif response.haslayer(TCP) and response.getlayer(TCP).flags == "RA":
+        # SYN-ACKパケットのflagが"SA"の場合、ポートが開いていると判断
+        # "RA"の場合は閉じていると判断
+        # すでに別のスキャンでの結果が出ている場合、結果を優先順位に従って修正する
+        if response != None:
+            if response.haslayer(TCP) and response[TCP].flags == 'SA':
+                self.open_ports[key_name] = "open"
+            elif response.haslayer(TCP) and response[TCP].flags == 'RA':
                 if not (scanned and self.open_ports[key_name] == "open"):
-                    self.open_ports[key_name] = "Closed"
-            elif response.haslayer(ICMP):
+                    self.open_ports[key_name] = "closed"
+            elif response.haslayer(TCP) or response.haslayer(ICMP):
                 if not (scanned and self.open_ports[key_name] in ["open", "closed", "open|filtered", "unknown"]):
                     self.open_ports[key_name] = "filtered"
             else:
                 if not (scanned and self.open_ports[key_name] in ["open", "closed"]):
                     self.open_ports[key_name] = "unknown"
                     print(response.summary())
+
+            # RSTパケットを送信して接続をリセット
+            rst_packet = TCP(sport=source_port, dport=target_port, flags='R', seq=response.ack)
+            send(ip/rst_packet, verbose=0)
+    
+    async def udp_scan(self, target_port):
+        self._display_message()
+        # パケットの作成
+        packet = IP(dst=self.ip_address)/UDP(dport=target_port)
+        response = sr1(packet, timeout=2, verbose=False)
+        key_name = str(target_port)+"/udp"
+
+        # レスポンスがなければ、ポートが空いているかフィルタリングされていると判断する
+        # ポートが閉じている場合は ICMP Port Unreachable が返ってくる
+        if response is None:
+            self.open_ports[key_name] = "open|filtered"
+        elif response.haslayer(ICMP):
+            self.open_ports[key_name] = "closed"
+        elif response.haslayer(UDP):
+            self.open_ports[key_name] = "open|filtered"
+        else:
+            self.open_ports[key_name] = "unknown"
+            print(response.summary())
+    
+    async def xmas_scan(self, target_port):
+        self._display_message()
+        # パケットの作成
+        pkt = IP(dst=self.ip_address)/TCP(dport=target_port, flags="FPU")
+        response = sr1(pkt, timeout=1, verbose=0)
+
+        key_name = str(target_port)+"/tcp"
+        scanned = key_name in self.open_ports
+        
+        # レスポンスがなければ、ポートが空いているかフィルタリングされていると判断する
+        if response is None:
+            if not (scanned and self.open_ports[key_name] in ["open", "closed"]):
+                self.open_ports[key_name] = "open|filtered"
+        elif response.haslayer(TCP) and response.getlayer(TCP).flags == "RA":
+            if not (scanned and self.open_ports[key_name] == "open"):
+                self.open_ports[key_name] = "Closed"
+        elif response.haslayer(ICMP):
+            if not (scanned and self.open_ports[key_name] in ["open", "closed", "open|filtered", "unknown"]):
+                self.open_ports[key_name] = "filtered"
+        else:
+            if not (scanned and self.open_ports[key_name] in ["open", "closed"]):
+                self.open_ports[key_name] = "unknown"
+                print(response.summary())
     
     def show_result(self):
         for port,result in self.open_ports.items():
@@ -204,12 +215,13 @@ def main():
     if discovered:
         scan_types = getattr(args, 'scan_types', {})
         if scan_types.get('syn') or scan_types == {}:
-            scanner.syn_scan()
+            scanner.scan_types.append("syn")
         if scan_types.get('udp'):
-            scanner.udp_scan()
+            scanner.scan_types.append("udp")
         if scan_types.get('xmas'):
-            scanner.xmas_scan()
+            scanner.scan_types.append("xmas")
         
+        asyncio.run(scanner.scan_ports())
         scanner.show_result()
     
 
