@@ -4,6 +4,11 @@ import socket
 import re
 import random
 import asyncio
+import time
+import sys
+import threading
+import itertools
+import psutil
 
 
 def resolve_ip(target):
@@ -42,6 +47,23 @@ def validate_ports(port_string):
 
 
 
+def loading_animation(stop_event):
+    chars = itertools.cycle(['.', '..', '...','....','.....'])
+    while not stop_event.is_set():  # stop_eventがセットされるまでアニメーションを続ける
+        sys.stdout.write(f'\033[2K\033[G{next(chars)}')  # キャラクターを更新
+        sys.stdout.flush()  # 即時反映
+        time.sleep(0.5)  # アニメーション更新間隔（100ms）
+
+
+
+def get_service_name(port, protocol="tcp"):
+    try:
+        return socket.getservbyport(port, protocol)
+    except OSError:
+        return "Unknown"
+
+
+
 class ScanTypeAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         if not hasattr(namespace, 'scan_types'):
@@ -61,24 +83,20 @@ class ScanTypeAction(argparse.Action):
 
 
 class Scanner:
-    def __init__(self, ip_address, target_ports):
+    def __init__(self, ip_address, target_ports, target):
         self.ip_address = ip_address
         self.target_ports = target_ports
+        self.target = target
         self.scan_types = []
         self.open_ports = {} # port:"closed" for port in self.target_ports
-        self.message_displayed = False
-
-    def _display_message(self):
-        if not self.message_displayed:
-            print("Starting port scan.")
-            self.message_displayed = True
 
     def host_discovery(self):
-        self._display_message()
         ping = IP(dst=self.ip_address)/ICMP()
         response = sr1(ping, timeout=2)
         if response is None:
-            print("Host might be down or unreachable.")
+            sys.stdout.write('\033[2K\033[G')  # 現在の行をクリア
+            sys.stdout.flush()  # 画面を更新
+            print("\nHost might be down or unreachable.")
             print("If you want to skip the ping process, try -Pn.")
             return False
         return True
@@ -95,7 +113,6 @@ class Scanner:
         await asyncio.gather(*tasks)
 
     async def syn_scan(self, target_port):
-        self._display_message()
         # 送信元ポート番号（ランダム）
         source_port = RandShort()
         # 指定されたIPアドレスを送信先とするIPパケットを作成
@@ -129,7 +146,6 @@ class Scanner:
             send(ip/rst_packet, verbose=0)
     
     async def udp_scan(self, target_port):
-        self._display_message()
         # パケットの作成
         packet = IP(dst=self.ip_address)/UDP(dport=target_port)
         response = sr1(packet, timeout=2, verbose=False)
@@ -148,7 +164,6 @@ class Scanner:
             print(response.summary())
     
     async def xmas_scan(self, target_port):
-        self._display_message()
         # パケットの作成
         pkt = IP(dst=self.ip_address)/TCP(dport=target_port, flags="FPU")
         response = sr1(pkt, timeout=1, verbose=0)
@@ -170,11 +185,21 @@ class Scanner:
             if not (scanned and self.open_ports[key_name] in ["open", "closed"]):
                 self.open_ports[key_name] = "unknown"
                 print(response.summary())
+        
     
-    def show_result(self):
-        for port,result in self.open_ports.items():
-            if "open" in result:
-                print(f"Port {port} is {result}")
+    def show_result(self, scan_time):
+        print(f"\nScan report to {self.target}")
+        if "open" in self.open_ports.values():
+            print("PORT     STATE  SERVICE")
+            for port,result in self.open_ports.items():
+                if "open" in result:
+                    port_num,protocol = port.split("/")
+                    service_name = get_service_name(int(port_num),protocol)
+                    print("{:<8} {}   {}".format(port, result, service_name))
+        else:
+            print("No open ports were found")
+
+        print(f"\nScan done: Scan time was {scan_time:.2f} seconds.")
 
 
 
@@ -206,7 +231,18 @@ def main():
 
     conf.verb = 0
     
-    scanner = Scanner(ip_address, ports)
+    scanner = Scanner(ip_address, ports, args.target)
+
+    print("Starting port scan.")
+
+    # アニメーション停止用のイベントを作成
+    stop_event = threading.Event()
+
+    # アニメーションを別スレッドで実行
+    animation_thread = threading.Thread(target=loading_animation, args=(stop_event,), daemon=True)
+    animation_thread.start()
+
+    start_time = time.perf_counter()  # 高精度な開始時刻を記録
 
     discovered = True
     if not args.Pn:
@@ -222,7 +258,11 @@ def main():
             scanner.scan_types.append("xmas")
         
         asyncio.run(scanner.scan_ports())
-        scanner.show_result()
+
+        end_time = time.perf_counter()  # 高精度な終了時刻を記録
+        stop_event.set() # アニメーションの終了
+
+        scanner.show_result(end_time - start_time)
     
 
 if __name__ == "__main__":
