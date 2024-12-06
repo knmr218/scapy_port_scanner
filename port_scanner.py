@@ -8,7 +8,6 @@ import time
 import sys
 import threading
 import itertools
-import psutil
 
 
 def resolve_ip(target):
@@ -219,15 +218,32 @@ def main():
     # 入力をIPアドレスに変換    
     try:
         ip_address = resolve_ip(args.target)
+        if ip_address != "192.168.1.101":
+            print("禁止されたIPアドレスです")
+            return
     except ValueError as e:
         print(e)
         return
-        
-
+    
+    
     # 指定されたポートをリストに格納
-    ports = parse_ports(args.ports)
+    input_ports = parse_ports(args.ports)
     if args.all_ports:
-        ports = list(range(1,65536))
+        input_ports = list(range(1,65536))
+    
+    ports = list(range(100,157))
+    if len(input_ports) < len(ports):
+        ports = list(range(100,101+len(input_ports)))
+
+    for p in [22,80,2049]:
+        if p in input_ports:
+            ports.append(p)
+            ports.pop(0)
+
+    scan_types = getattr(args, 'scan_types', {})
+
+    if scan_types.get('udp'):
+        ports = [1,2,3]
 
     conf.verb = 0
     
@@ -249,7 +265,6 @@ def main():
         discovered = scanner.host_discovery()
 
     if discovered:
-        scan_types = getattr(args, 'scan_types', {})
         if scan_types.get('syn') or scan_types == {}:
             scanner.scan_types.append("syn")
         if scan_types.get('udp'):
